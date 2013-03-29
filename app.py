@@ -8,7 +8,10 @@ from PyQt4 import uic
 from OpenGL import GLU
 from OpenGL.GL import *
 import OpenGL.GL.shaders as shaders
-from numpy import array
+import math
+import numpy as np
+import scipy.ndimage as ndimage
+from scipy.misc import imread
 
 class GLWidget(QtOpenGL.QGLWidget):
 	def __init__(self, parent=None):
@@ -17,13 +20,14 @@ class GLWidget(QtOpenGL.QGLWidget):
 		self.yRotDeg = 0.0
 
 	def initializeGL(self):
-		self.qglClearColor(QtGui.QColor(0, 0,  150))
+		self.qglClearColor(QtGui.QColor(10, 10, 10))
 		self.initGeometry()
 
 		glEnable(GL_DEPTH_TEST)
 
 	def resizeGL(self, width, height):
-		if height == 0: height = 1
+		width = max(width, 1)
+		height = max(height, 1)
 
 		glViewport(0, 0, width, height)
 		glMatrixMode(GL_PROJECTION)
@@ -37,43 +41,51 @@ class GLWidget(QtOpenGL.QGLWidget):
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
 		glLoadIdentity()
-		glTranslate(0.0, 0.0, -50.0)
-		glScale(20.0, 20.0, 20.0)
-		glRotate(self.yRotDeg, 0.2, 1.0, 0.3)
-		glTranslate(-0.5, -0.5, -0.5)
+		GLU.gluLookAt(3*math.cos(self.yRotDeg),3*math.sin(self.yRotDeg),3, 0,0,0, 0,0,1)
 
+		glBindTexture(GL_TEXTURE_2D, self.texid)
 		glEnableClientState(GL_VERTEX_ARRAY)
 		glEnableClientState(GL_COLOR_ARRAY)
+		glEnableClientState(GL_TEXTURE_COORD_ARRAY)
 		glVertexPointerf(self.cubeVtxArray)
 		glColorPointerf(self.cubeClrArray)
+		glTexCoordPointerf(self.cubeTexArray)
 		glDrawElementsui(GL_QUADS, self.cubeIdxArray)
 
 	def initGeometry(self):
-		self.cubeVtxArray = array(
-				[[0.0, 0.0, 0.0],
-				 [1.0, 0.0, 0.0],
-				 [1.0, 1.0, 0.0],
-				 [0.0, 1.0, 0.0],
-				 [0.0, 0.0, 1.0],
-				 [1.0, 0.0, 1.0],
-				 [1.0, 1.0, 1.0],
-				 [0.0, 1.0, 1.0]])
-		self.cubeIdxArray = [
-				0, 1, 2, 3,
-				3, 2, 6, 7,
-				1, 0, 4, 5,
-				2, 1, 5, 6,
-				0, 3, 7, 4,
-				7, 6, 5, 4 ]
-		self.cubeClrArray = [
-				[0.0, 0.0, 0.0],
-				[1.0, 0.0, 0.0],
-				[1.0, 1.0, 0.0],
-				[0.0, 1.0, 0.0],
-				[0.0, 0.0, 1.0],
-				[1.0, 0.0, 1.0],
-				[1.0, 1.0, 1.0],
-				[0.0, 1.0, 1.0 ]]
+		nlat = 50
+		nlon = 50
+
+		# create vertices
+		va = []
+		ca = []
+		ta = []
+		for ilat in range(nlat+1):
+			lat = math.pi * ilat/nlat
+			for ilon in range(nlon+1):
+				lon = 2 * math.pi * ilon/nlon
+
+				x = math.sin(lat)*math.cos(lon)
+				y = math.sin(lat)*math.sin(lon)
+				z = math.cos(lat)
+
+				va.append([x,y,z])
+				ca.append([1,1,1])
+				ta.append([ilon/nlon, ilat/nlat])
+
+		# create topology
+		ia = []
+		for ilat in range(nlat):
+			for ilon in range(nlon):
+				i0 = ilat * nlon + ilon
+				i1 = ilat * nlon + ilon+1
+
+				ia.append([i0,i1,i1+nlon,i0+nlon])
+
+		self.cubeVtxArray = np.array(va, np.float32)
+		self.cubeClrArray = np.array(ca, np.float32)
+		self.cubeTexArray = np.array(ta, np.float32)
+		self.cubeIdxArray = np.array(ia, int).flatten()
 
 		vert_shader = shaders.compileShader("""
 			#version 400
@@ -114,10 +126,29 @@ class GLWidget(QtOpenGL.QGLWidget):
 		shader_solid_textured_lf = shaders.compileProgram(vert_shader, frag_shader)
 		print(shader_solid_textured_lf)
 
+		# load texture
+		def half(img):
+			img = img.astype(float)
+			return (img[::2,::2] + img[1::2,::2] + img[::2,1::2] + img[1::2,1::2])/4
+
+		tex_pan = imread('/home/xyx/download/panorama.jpg')
+		print(tex_pan.shape)
+		tex_pan = half(tex_pan).astype(np.uint8)
+
+		glEnable(GL_TEXTURE_2D)
+
+		self.texid = glGenTextures(1)
+		glBindTexture(GL_TEXTURE_2D, self.texid)
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, tex_pan.shape[1], tex_pan.shape[0], 0, GL_RGB, GL_UNSIGNED_BYTE, tex_pan.flatten())
+
 		
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP)
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP)
 
 	def spin(self):
-		self.yRotDeg = (self.yRotDeg  + 1) % 360.0
+		self.yRotDeg = (self.yRotDeg  + 0.02) % (2*math.pi)
 		self.parent.statusBar().showMessage('rotation %f' % self.yRotDeg)
 		self.updateGL()
 

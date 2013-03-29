@@ -16,8 +16,9 @@ from scipy.misc import imread
 class CompositeLayerWidget(QtOpenGL.QGLWidget):
 	""" A widget that renders final image of a spherical map """
 	def __init__(self, parent, layers):
-		self.parent = parent
 		QtOpenGL.QGLWidget.__init__(self, parent)
+		self.parent = parent
+
 		self.yRotDeg = 0.0
 		self.layers = layers
 
@@ -49,10 +50,10 @@ class CompositeLayerWidget(QtOpenGL.QGLWidget):
 		glEnableClientState(GL_VERTEX_ARRAY)
 		glEnableClientState(GL_COLOR_ARRAY)
 		glEnableClientState(GL_TEXTURE_COORD_ARRAY)
-		glVertexPointerf(self.cubeVtxArray)
-		glColorPointerf(self.cubeClrArray)
-		glTexCoordPointerf(self.cubeTexArray)
-		glDrawElementsui(GL_QUADS, self.cubeIdxArray)
+		glVertexPointerf(self.sphereVtxArray)
+		glColorPointerf(self.sphereClrArray)
+		glTexCoordPointerf(self.sphereTexArray)
+		glDrawElementsui(GL_QUADS, self.sphereIdxArray)
 
 	def initGeometry(self):
 		nlat = 50
@@ -84,10 +85,10 @@ class CompositeLayerWidget(QtOpenGL.QGLWidget):
 
 				ia.append([i0,i1,i1+nlon,i0+nlon])
 
-		self.cubeVtxArray = np.array(va, np.float32)
-		self.cubeClrArray = np.array(ca, np.float32)
-		self.cubeTexArray = np.array(ta, np.float32)
-		self.cubeIdxArray = np.array(ia, int).flatten()
+		self.sphereVtxArray = 10*np.array(va, np.float32)
+		self.sphereClrArray = np.array(ca, np.float32)
+		self.sphereTexArray = np.array(ta, np.float32)
+		self.sphereIdxArray = np.array(ia, int).flatten()
 
 		vert_shader = shaders.compileShader("""
 			#version 400
@@ -212,12 +213,9 @@ class Layers(object):
 		self.layers = [path]
 		self.is_changed = True
 
-
-
-
-class MainWindow(QtGui.QMainWindow):
-	def __init__(self):
-		QtGui.QMainWindow.__init__(self)
+class SphereApplication(QtGui.QApplication):
+	def __init__(self, argv):
+		QtGui.QApplication.__init__(self,argv)
 
 		# create model
 		self.layers = Layers()
@@ -226,17 +224,17 @@ class MainWindow(QtGui.QMainWindow):
 		self.ui = uic.loadUi('layout.ui')
 
 		# insert composite view
-		glWidget = CompositeLayerWidget(self, self.layers)
+		glWidget = CompositeLayerWidget(self.ui, self.layers)
 
 		timer = QtCore.QTimer(self)
 		timer.setInterval(20)
-		QtCore.QObject.connect(timer, QtCore.SIGNAL('timeout()'), glWidget.tick)
+		timer.timeout.connect(glWidget.tick)
 		timer.start()
 
 		self.ui.horizontalLayout.insertWidget(0, glWidget,1)
 
 		# insert list view
-		self.ui.horizontalLayout.insertWidget(1, LayersWidget(self, self.layers),1)
+		self.ui.horizontalLayout.insertWidget(1, LayersWidget(self.ui, self.layers),1)
 
 		# launch
 		self.ui.show()
@@ -259,6 +257,5 @@ class MainWindow(QtGui.QMainWindow):
 		QtGui.qApp.quit()
 
 if __name__ == '__main__':
-	app = QtGui.QApplication(sys.argv)
-	win = MainWindow()
+	app = SphereApplication(sys.argv)
 	sys.exit(app.exec_())

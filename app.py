@@ -13,11 +13,13 @@ import numpy as np
 import scipy.ndimage as ndimage
 from scipy.misc import imread
 
-class GLWidget(QtOpenGL.QGLWidget):
-	def __init__(self, parent=None):
+class CompositeLayerWidget(QtOpenGL.QGLWidget):
+	""" A widget that renders final image of a spherical map """
+	def __init__(self, parent, layers):
 		self.parent = parent
 		QtOpenGL.QGLWidget.__init__(self, parent)
 		self.yRotDeg = 0.0
+		self.layers = layers
 
 	def initializeGL(self):
 		self.qglClearColor(QtGui.QColor(10, 10, 10))
@@ -127,35 +129,51 @@ class GLWidget(QtOpenGL.QGLWidget):
 		print(shader_solid_textured_lf)
 
 		# load texture
-		def half(img):
-			img = img.astype(float)
-			return (img[::2,::2] + img[1::2,::2] + img[::2,1::2] + img[1::2,1::2])/4
+		glEnable(GL_TEXTURE_2D)
+		self.texid = glGenTextures(1)
 
-		tex_pan = imread('/home/xyx/download/panorama.jpg')
+		#self.load_texture_from('/home/xyx/download/panorama.jpg')
+
+
+	def load_texture_from(self, path):
+		def half(img):
+			if img.shape[0]%2==0 and img.shape[1]%2==0 and img.shape[0]>2000:
+				img = img.astype(float)
+				return (img[::2,::2] + img[1::2,::2] + img[::2,1::2] + img[1::2,1::2])/4
+			else:
+				return img
+
+		try:
+			tex_pan = imread(path)
+		except IOError:
+			return
+
 		print(tex_pan.shape)
 		tex_pan = half(tex_pan).astype(np.uint8)
 
-		glEnable(GL_TEXTURE_2D)
-
-		self.texid = glGenTextures(1)
 		glBindTexture(GL_TEXTURE_2D, self.texid)
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, tex_pan.shape[1], tex_pan.shape[0], 0, GL_RGB, GL_UNSIGNED_BYTE, tex_pan.flatten())
-
 		
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP)
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP)
 
-	def spin(self):
+	def tick(self):
 		self.yRotDeg = (self.yRotDeg  + 0.02) % (2*math.pi)
 		self.parent.statusBar().showMessage('rotation %f' % self.yRotDeg)
+
+		if self.layers.is_changed:
+			self.load_texture_from(self.layers.layers[0])
+			self.layers.is_changed = False
+
 		self.updateGL()
 
 class LayersWidget(QtGui.QListWidget):
-	def __init__(self, parent):
+	def __init__(self, parent, layers):
 		super(LayersWidget, self).__init__(parent)
 		self.setAcceptDrops(True)
+		self.layers = layers
 
 	def dragEnterEvent(self, event):
 		print('ENTER')
@@ -172,6 +190,7 @@ class LayersWidget(QtGui.QListWidget):
 				path = unicode(path_url.toLocalFile())
 				if len(path)>0:
 					print('local', path)
+					self.layers.add_from_path(path)
 				else:
 					print('URL', path_url.toString())
 			event.accept()
@@ -184,26 +203,40 @@ class LayersWidget(QtGui.QListWidget):
 		print(event.mimeData().urls())
 		print(event.mimeData().imageData())
 
+class Layers(object):
+	def __init__(self):
+		self.layers = []
+		self.is_changed = False
+
+	def add_from_path(self, path):
+		self.layers = [path]
+		self.is_changed = True
+
+
+
+
 class MainWindow(QtGui.QMainWindow):
 	def __init__(self):
 		QtGui.QMainWindow.__init__(self)
 
+		# create model
+		self.layers = Layers()
+
+		# create view
 		self.ui = uic.loadUi('layout.ui')
 
-		# insert GL widget
-		glWidget = GLWidget(self)
-		glWidget = GLWidget(self)
-		self.setCentralWidget(glWidget)
+		# insert composite view
+		glWidget = CompositeLayerWidget(self, self.layers)
 
 		timer = QtCore.QTimer(self)
 		timer.setInterval(20)
-		QtCore.QObject.connect(timer, QtCore.SIGNAL('timeout()'), glWidget.spin)
+		QtCore.QObject.connect(timer, QtCore.SIGNAL('timeout()'), glWidget.tick)
 		timer.start()
 
 		self.ui.horizontalLayout.insertWidget(0, glWidget,1)
 
-		# insert layers list
-		self.ui.horizontalLayout.insertWidget(1, LayersWidget(self),1)
+		# insert list view
+		self.ui.horizontalLayout.insertWidget(1, LayersWidget(self, self.layers),1)
 
 		# launch
 		self.ui.show()

@@ -8,10 +8,30 @@ from PyQt4 import uic
 from OpenGL import GLU
 from OpenGL.GL import *
 import OpenGL.GL.shaders as shaders
+import os
+import time
 import math
 import numpy as np
 import scipy.ndimage as ndimage
 from scipy.misc import imread
+
+class MissingComponentError(Exception):
+	""" Use this class to express non-critical missing dependency error """
+	pass
+
+def load_exr(path):
+	try:
+		import OpenEXR
+		import Imath
+	except ImportError:
+		raise MissingComponentError()
+
+	f = OpenEXR.InputFile(path)
+	chs = f.channels('RGB', Imath.PixelType(Imath.PixelType.FLOAT))
+	w = f.header()['dataWindow'].max.x+1
+	h = f.header()['dataWindow'].max.y+1
+
+	return np.array([np.fromstring(ch,np.float32).reshape([h,w]) for ch in chs]).transpose([1,2,0])
 
 class CompositeLayerWidget(QtOpenGL.QGLWidget):
 	""" A widget that renders final image of a spherical map """
@@ -21,6 +41,8 @@ class CompositeLayerWidget(QtOpenGL.QGLWidget):
 
 		self.yRotDeg = 0.0
 		self.layers = layers
+
+		self.t = time.time()
 
 	def initializeGL(self):
 		self.qglClearColor(QtGui.QColor(10, 10, 10))
@@ -44,7 +66,7 @@ class CompositeLayerWidget(QtOpenGL.QGLWidget):
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
 		glLoadIdentity()
-		GLU.gluLookAt(3*math.cos(self.yRotDeg),3*math.sin(self.yRotDeg),3, 0,0,0, 0,0,1)
+		GLU.gluLookAt(0,0,1, 3*math.cos(self.yRotDeg),3*math.sin(self.yRotDeg),1, 0,0,1)
 
 		glBindTexture(GL_TEXTURE_2D, self.texid)
 		glEnableClientState(GL_VERTEX_ARRAY)
@@ -145,15 +167,17 @@ class CompositeLayerWidget(QtOpenGL.QGLWidget):
 				return img
 
 		try:
-			tex_pan = imread(path)
+			if os.path.splitext(path)[1].lower() == '.exr':
+				tex_pan = load_exr(path)
+			else:
+				tex_pan = imread(path).astype(float)/255
 		except IOError:
 			return
 
 		print(tex_pan.shape)
-		tex_pan = half(tex_pan).astype(np.uint8)
 
 		glBindTexture(GL_TEXTURE_2D, self.texid)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, tex_pan.shape[1], tex_pan.shape[0], 0, GL_RGB, GL_UNSIGNED_BYTE, tex_pan.flatten())
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, tex_pan.shape[1], tex_pan.shape[0], 0, GL_RGB, GL_FLOAT, tex_pan.flatten())
 		
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
@@ -161,14 +185,17 @@ class CompositeLayerWidget(QtOpenGL.QGLWidget):
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP)
 
 	def tick(self):
-		self.yRotDeg = (self.yRotDeg  + 0.02) % (2*math.pi)
+		t = time.time()
+		dt = t - self.t
+		self.t = t
+
+		self.yRotDeg = (self.yRotDeg  + dt*math.radians(30)) % (2*math.pi)
 		self.parent.statusBar().showMessage('rotation %f' % self.yRotDeg)
 
-		if self.layers.is_changed:
-			self.load_texture_from(self.layers.layers[0])
-			self.layers.is_changed = False
-
 		self.updateGL()
+
+	def updateLayer(self, layers):
+		self.load_texture_from(layers.layers[0])
 
 class LayersWidget(QtGui.QListWidget):
 	def __init__(self, parent, layers):
@@ -204,14 +231,22 @@ class LayersWidget(QtGui.QListWidget):
 		print(event.mimeData().urls())
 		print(event.mimeData().imageData())
 
-class Layers(object):
+	def updateLayer(self, layers):
+		self.clear()
+		for item in layers.layers:
+			self.addItem(item)
+
+
+class Layers(QtCore.QObject):
+	layerUpdate = QtCore.pyqtSignal(object)
+
 	def __init__(self):
+		super(QtCore.QObject, self).__init__()
 		self.layers = []
-		self.is_changed = False
 
 	def add_from_path(self, path):
 		self.layers = [path]
-		self.is_changed = True
+		self.layerUpdate.emit(self)
 
 class SphereApplication(QtGui.QApplication):
 	def __init__(self, argv):
@@ -224,23 +259,24 @@ class SphereApplication(QtGui.QApplication):
 		self.ui = uic.loadUi('layout.ui')
 
 		# insert composite view
-		glWidget = CompositeLayerWidget(self.ui, self.layers)
+		compositeWidget = CompositeLayerWidget(self.ui, self.layers)
 
 		timer = QtCore.QTimer(self)
 		timer.setInterval(20)
-		timer.timeout.connect(glWidget.tick)
+		timer.timeout.connect(compositeWidget.tick)
 		timer.start()
 
-		self.ui.horizontalLayout.insertWidget(0, glWidget,1)
+		self.ui.horizontalLayout.insertWidget(0, compositeWidget,1)
 
 		# insert list view
-		self.ui.horizontalLayout.insertWidget(1, LayersWidget(self.ui, self.layers),1)
+		listWidget = LayersWidget(self.ui, self.layers)
+		self.ui.horizontalLayout.insertWidget(1, listWidget,1)
+
+		self.layers.layerUpdate.connect(compositeWidget.updateLayer)
+		self.layers.layerUpdate.connect(listWidget.updateLayer)
 
 		# launch
 		self.ui.show()
-
-	def dE(self, event):
-		print(event)
 
 	def initActions(self):
 		self.exitAction = QtGui.QAction('Quit', self)
